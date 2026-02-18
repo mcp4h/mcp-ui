@@ -1,0 +1,28 @@
+{
+	"name": "mcp-view",
+	"version": "0.1.0",
+	"description": "Minimal web components host for MCP UI",
+	"type": "module",
+	"main": "dist/mcp-view.umd.js",
+	"module": "dist/mcp-view.esm.js",
+	"types": "dist/index.d.ts",
+	"exports": {
+		".": {
+			"import": "./dist/mcp-view.esm.js",
+			"require": "./dist/mcp-view.umd.js",
+			"types": "./dist/index.d.ts"
+		}
+	},
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"build:js": "node scripts/build.mjs",
+		"build:types": "tsc -p tsconfig.json",
+		"build": "npm run build:js && npm run build:types"
+	},
+	"devDependencies": {
+		"esbuild": "^0.20.0",
+		"typescript": "^5.4.0"
+	}
+}

@@ -1,0 +1,47 @@
+<!doctype html>
+<html>
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1">
+		<title>MCP View ESM Example</title>
+		<style>
+			body {
+				margin: 0;
+				padding: 2rem;
+				background: #f2f3f6;
+				font-family: "IBM Plex Sans", "Source Sans 3", "Assistant", "Noto Sans", sans-serif;
+			}
+
+			.frame {
+				height: 460px;
+				border: 1px solid #cfd3dd;
+				border-radius: 12px;
+				overflow: hidden;
+				background: #fff;
+			}
+		</style>
+	</head>
+	<body>
+		<div class="frame">
+			<mcp-view
+				src="ui://index.html"
+				theme="/examples/assets/theme.css"
+				base="/examples/assets/"
+				style="width: 100%; height: 100%;"></mcp-view>
+		</div>
+		<script type="module">
+			// Note: module imports require an HTTP server (file:// will be blocked).
+			import "../dist/mcp-view.esm.js";
+			const view = document.querySelector("mcp-view");
+			view.data = { name: "Priya", queue: 12 };
+			view.css = ".mcp-card { border-color: #c8c7c1; }";
+			setTimeout(
+				() => {
+					view.data = { name: "Priya", queue: 9, status: "synced" };
+				},
+				1200
+			);
+			// Uses resolver attribute to look up window.exampleResolver.
+		</script>
+	</body>
+</html>

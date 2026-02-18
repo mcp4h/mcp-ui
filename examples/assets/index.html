@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+  <head>
+    <link rel="stylesheet" href="ui://app.css">
+  </head>
+  <body class="mcp-root">
+    <main class="mcp-card" style="max-width: 520px; margin: 2rem auto; display: grid; gap: 1rem;">
+      <div>
+        <p class="mcp-subtitle">Embedded UI</p>
+        <h1 class="mcp-title">Shipping Console</h1>
+      </div>
+      <div style="display: flex; gap: 1rem; align-items: center;">
+        <span class="mcp-tag">Operator</span>
+        <strong id="operator">Unknown</strong>
+        <span class="mcp-tag">Queue</span>
+        <strong id="queue">-</strong>
+      </div>
+      <div class="mcp-surface" style="display: grid; gap: 0.75rem;">
+        <label class="mcp-label" for="reference">Reference</label>
+        <input class="mcp-input" id="reference" placeholder="Enter reference">
+        <label class="mcp-label" for="destination">Destination</label>
+        <select class="mcp-select" id="destination">
+          <option>San Francisco</option>
+          <option>Berlin</option>
+          <option>Tokyo</option>
+        </select>
+      </div>
+      <div style="display: flex; gap: 0.5rem; align-items: center;">
+        <button class="mcp-button mcp-button-primary">Create shipment</button>
+        <button class="mcp-button mcp-button-ghost">Save draft</button>
+        <span class="mcp-badge">Live</span>
+      </div>
+    </main>
+    <script src="ui://app.js"><\/script>
+  </body>
+</html>
