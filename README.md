@@ -1,4 +1,4 @@
-# Flux UI
+# MCP UI
 
 Minimal web component host for loading MCP-related UI content into a sandboxed iframe using srcdoc and a message-based resource/toolcall bridge.
 
