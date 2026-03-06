@@ -29,7 +29,7 @@ type ToolResult = {
 };
 export class McpViewElement extends HTMLElement {
 	static get observedAttributes(): string[] {
-		return ["src", "theme", "base"];
+		return ["src", "theme", "base", "auto-height", "max-height"];
 	}
 	private _resolver: Resolver | null = null
 	;
@@ -76,6 +76,10 @@ export class McpViewElement extends HTMLElement {
 	}
 	attributeChangedCallback(name: string): void {
 		if (name === "src" || name === "theme" || name === "base") {
+			this.render();
+			return;
+		}
+		if (name === "auto-height") {
 			this.render();
 		}
 	}
@@ -150,6 +154,24 @@ export class McpViewElement extends HTMLElement {
 		this._data = value;
 		this.sendDataUpdate();
 	}
+	get autoHeight(): boolean {
+		return this.readBooleanAttribute("auto-height");
+	}
+	set autoHeight(value: boolean) {
+		if (value) {
+			this.setAttribute("auto-height", "true");
+		}
+		else {
+			this.removeAttribute("auto-height");
+		}
+	}
+	get maxHeight(): number | null {
+		const raw = this.getAttribute("max-height");
+		if (!raw) return null;
+		const parsed = Number(raw);
+		if (!Number.isFinite(parsed) || parsed <= 0) return null;
+		return parsed;
+	}
 	private render(): void {
 		if (!this.isConnected) return;
 		const uri = this.getRootUri();
@@ -162,7 +184,7 @@ export class McpViewElement extends HTMLElement {
 		if (!root.ok) return;
 		const html = new TextDecoder().decode(root.body);
 		const themeCss = buildThemeCss({ css: this._css, layers: this._layers });
-		const bootstrapScript = getIframeBootstrapScript(this._data);
+		const bootstrapScript = getIframeBootstrapScript(this._data, { autoHeight: this.autoHeight });
 		const rewritten = rewriteHtml(
 			{
 				html,
@@ -223,6 +245,15 @@ export class McpViewElement extends HTMLElement {
 			}
 			const request: PendingToolCall = { id, params, source: event.source };
 			void this.fulfillToolCall(request);
+			return;
+		}
+		if (data.type === "mcp:height") {
+			if (!this.autoHeight) return;
+			const height = typeof data.height === "number" ? data.height : 0;
+			if (!Number.isFinite(height) || height <= 0) return;
+			const maxHeight = this.maxHeight;
+			const nextHeight = maxHeight ? Math.min(height, maxHeight) : height;
+			this.style.height = `${Math.ceil(nextHeight)}px`;
 		}
 	}
 	private async fulfillRequest(request: PendingRequest): Promise<void> {
@@ -371,6 +402,14 @@ export class McpViewElement extends HTMLElement {
 	private sendDataUpdate(): void {
 		if (!this._iframe || !this._iframe.contentWindow) return;
 		this._iframe.contentWindow.postMessage({ type: "mcp-data:update", payload: this._data }, "*");
+	}
+	private readBooleanAttribute(name: string): boolean {
+		const raw = this.getAttribute(name);
+		if (raw === null) return false;
+		if (raw === "") return true;
+		const normalized = raw.toLowerCase().trim();
+		if (normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on") return true;
+		return false;
 	}
 	private getActiveResolver(): Resolver | null {
 		if (this._resolver) return this._resolver;

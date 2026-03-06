@@ -10,6 +10,7 @@ Minimal web component host for loading MCP-related UI content into a sandboxed i
 - Iframe bootstraps a small bridge script and utility CSS.
 - Theme system with `--mcp-` variables and built-in `.mcp-*` utility classes.
 - Remote allowlist support for optional https/http resources.
+- Optional autoheight mode for content-driven sizing.
 
 ## Install
 
@@ -102,6 +103,22 @@ Set the `data` property on the host. The iframe can access `window.mcpData` and 
 ```js
 view.data = { input: "hello", output: null };
 ```
+
+## Autoheight
+
+Enable the iframe to report its content height so the host element resizes itself:
+
+```html
+<mcp-view src="ui://index.html" auto-height="true"></mcp-view>
+```
+
+You can cap the height with `max-height` (pixels):
+
+```html
+<mcp-view src="ui://index.html" auto-height="true" max-height="800"></mcp-view>
+```
+
+Note: if your content sets `html, body { height: 100%; }` or `min-height: 100%`, the reported height may stay at least the viewport height.
 
 ## Tool calling
 

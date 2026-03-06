@@ -1,7 +1,12 @@
-export function getIframeBootstrapScript(initialData: unknown): string {
+type BootstrapOptions = {
+	autoHeight?: boolean;
+};
+export function getIframeBootstrapScript(initialData: unknown, options: BootstrapOptions = {}): string {
 	const serialized = safeSerialize(initialData);
+	const autoHeightEnabled = options.autoHeight ? "true" : "false";
 	return `(() => {
   const initialData = ${serialized};
+  const autoHeightEnabled = ${autoHeightEnabled};
   window.mcpData = initialData;
   const pending = new Map();
   const toolPending = new Map();
@@ -92,6 +97,47 @@ export function getIframeBootstrapScript(initialData: unknown): string {
       window.dispatchEvent(new CustomEvent("mcp-data", { detail: data.payload }));
     }
   });
+
+  function initAutoHeight() {
+    if (!autoHeightEnabled) return;
+    let scheduled = false;
+    let lastHeight = 0;
+    const report = () => {
+      scheduled = false;
+      const doc = document.documentElement;
+      const body = document.body;
+      if (!doc) return;
+      const height = Math.ceil(
+        Math.max(
+          doc.scrollHeight,
+          doc.offsetHeight,
+          body ? body.scrollHeight : 0,
+          body ? body.offsetHeight : 0
+        )
+      );
+      if (!height || height === lastHeight) return;
+      lastHeight = height;
+      window.parent.postMessage({ type: "mcp:height", height }, "*");
+    };
+    const schedule = () => {
+      if (scheduled) return;
+      scheduled = true;
+      window.requestAnimationFrame(report);
+    };
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", schedule, { once: true });
+    }
+    window.addEventListener("load", schedule, { once: true });
+    window.addEventListener("resize", schedule);
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(schedule);
+      observer.observe(doc);
+      if (document.body) observer.observe(document.body);
+    }
+    schedule();
+  }
+
+  initAutoHeight();
 
   window.mcp = window.mcp || {};
   window.mcp.callTool = callTool;
