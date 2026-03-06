@@ -37,6 +37,9 @@ export declare class McpViewElement extends HTMLElement {
     set css(value: CssInput | null);
     get data(): unknown;
     set data(value: unknown);
+    get autoHeight(): boolean;
+    set autoHeight(value: boolean);
+    get maxHeight(): number | null;
     private render;
     private load;
     private getRootUri;
@@ -47,6 +50,7 @@ export declare class McpViewElement extends HTMLElement {
     private isRemoteAllowed;
     private postMessageToSource;
     private sendDataUpdate;
+    private readBooleanAttribute;
     private getActiveResolver;
     private buildDefaultResolver;
 }

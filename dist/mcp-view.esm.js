@@ -101,10 +101,12 @@ function getExtension(uri) {
 }
 
 // src/iframe-bootstrap.ts
-function getIframeBootstrapScript(initialData) {
+function getIframeBootstrapScript(initialData, options = {}) {
   const serialized = safeSerialize(initialData);
+  const autoHeightEnabled = options.autoHeight ? "true" : "false";
   return `(() => {
   const initialData = ${serialized};
+  const autoHeightEnabled = ${autoHeightEnabled};
   window.mcpData = initialData;
   const pending = new Map();
   const toolPending = new Map();
@@ -195,6 +197,47 @@ function getIframeBootstrapScript(initialData) {
       window.dispatchEvent(new CustomEvent("mcp-data", { detail: data.payload }));
     }
   });
+
+  function initAutoHeight() {
+    if (!autoHeightEnabled) return;
+    let scheduled = false;
+    let lastHeight = 0;
+    const report = () => {
+      scheduled = false;
+      const doc = document.documentElement;
+      const body = document.body;
+      if (!doc) return;
+      const height = Math.ceil(
+        Math.max(
+          doc.scrollHeight,
+          doc.offsetHeight,
+          body ? body.scrollHeight : 0,
+          body ? body.offsetHeight : 0
+        )
+      );
+      if (!height || height === lastHeight) return;
+      lastHeight = height;
+      window.parent.postMessage({ type: "mcp:height", height }, "*");
+    };
+    const schedule = () => {
+      if (scheduled) return;
+      scheduled = true;
+      window.requestAnimationFrame(report);
+    };
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", schedule, { once: true });
+    }
+    window.addEventListener("load", schedule, { once: true });
+    window.addEventListener("resize", schedule);
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(schedule);
+      observer.observe(doc);
+      if (document.body) observer.observe(document.body);
+    }
+    schedule();
+  }
+
+  initAutoHeight();
 
   window.mcp = window.mcp || {};
   window.mcp.callTool = callTool;
@@ -671,7 +714,7 @@ var McpViewElement = class extends HTMLElement {
     this._iframe = iframe;
   }
   static get observedAttributes() {
-    return ["src", "theme", "base"];
+    return ["src", "theme", "base", "auto-height", "max-height"];
   }
   connectedCallback() {
     window.addEventListener("message", this._boundMessageHandler);
@@ -682,6 +725,10 @@ var McpViewElement = class extends HTMLElement {
   }
   attributeChangedCallback(name) {
     if (name === "src" || name === "theme" || name === "base") {
+      this.render();
+      return;
+    }
+    if (name === "auto-height") {
       this.render();
     }
   }
@@ -754,6 +801,25 @@ var McpViewElement = class extends HTMLElement {
     this._data = value;
     this.sendDataUpdate();
   }
+  get autoHeight() {
+    return this.readBooleanAttribute("auto-height");
+  }
+  set autoHeight(value) {
+    if (value) {
+      this.setAttribute("auto-height", "true");
+    } else {
+      this.removeAttribute("auto-height");
+    }
+  }
+  get maxHeight() {
+    const raw = this.getAttribute("max-height");
+    if (!raw)
+      return null;
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed <= 0)
+      return null;
+    return parsed;
+  }
   render() {
     if (!this.isConnected)
       return;
@@ -769,7 +835,7 @@ var McpViewElement = class extends HTMLElement {
       return;
     const html = new TextDecoder().decode(root.body);
     const themeCss = buildThemeCss({ css: this._css, layers: this._layers });
-    const bootstrapScript = getIframeBootstrapScript(this._data);
+    const bootstrapScript = getIframeBootstrapScript(this._data, { autoHeight: this.autoHeight });
     const rewritten = rewriteHtml(
       {
         html,
@@ -833,6 +899,17 @@ var McpViewElement = class extends HTMLElement {
       }
       const request = { id, params, source: event.source };
       void this.fulfillToolCall(request);
+      return;
+    }
+    if (data.type === "mcp:height") {
+      if (!this.autoHeight)
+        return;
+      const height = typeof data.height === "number" ? data.height : 0;
+      if (!Number.isFinite(height) || height <= 0)
+        return;
+      const maxHeight = this.maxHeight;
+      const nextHeight = maxHeight ? Math.min(height, maxHeight) : height;
+      this.style.height = `${Math.ceil(nextHeight)}px`;
     }
   }
   async fulfillRequest(request) {
@@ -975,6 +1052,17 @@ var McpViewElement = class extends HTMLElement {
     if (!this._iframe || !this._iframe.contentWindow)
       return;
     this._iframe.contentWindow.postMessage({ type: "mcp-data:update", payload: this._data }, "*");
+  }
+  readBooleanAttribute(name) {
+    const raw = this.getAttribute(name);
+    if (raw === null)
+      return false;
+    if (raw === "")
+      return true;
+    const normalized = raw.toLowerCase().trim();
+    if (normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on")
+      return true;
+    return false;
   }
   getActiveResolver() {
     if (this._resolver)
