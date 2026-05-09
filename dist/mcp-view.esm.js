@@ -202,9 +202,9 @@ function getIframeBootstrapScript(initialData, options = {}) {
     if (!autoHeightEnabled) return;
     let scheduled = false;
     let lastHeight = 0;
+    const doc = document.documentElement;
     const report = () => {
       scheduled = false;
-      const doc = document.documentElement;
       const body = document.body;
       if (!doc) return;
       const height = Math.ceil(
@@ -231,8 +231,9 @@ function getIframeBootstrapScript(initialData, options = {}) {
     window.addEventListener("resize", schedule);
     if (typeof ResizeObserver !== "undefined") {
       const observer = new ResizeObserver(schedule);
-      observer.observe(doc);
-      if (document.body) observer.observe(document.body);
+      if (doc) observer.observe(doc);
+      const body = document.body;
+      if (body) observer.observe(body);
     }
     schedule();
   }
