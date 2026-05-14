@@ -6,7 +6,8 @@ Minimal web component host for loading MCP-related UI content into a sandboxed i
 
 - Native web components (no framework dependencies).
 - `<mcp-view>` resolves `ui://` resources via your resolver.
-- HTML is rewritten to use `mcp-*` components for resource loading.
+- By default, HTML is rewritten to use `mcp-*` components for resource loading.
+- Optional `resource-base` mode rewrites `ui://` assets to native browser-loadable URLs.
 - Iframe bootstraps a small bridge script and utility CSS.
 - Theme system with `--mcp-` variables and built-in `.mcp-*` utility classes.
 - Remote allowlist support for optional https/http resources.
@@ -42,6 +43,50 @@ npm install mcp-view
 
 The default fetch resolver uses `base` (or `/mcp/resources/` when omitted).
 
+## Native resource loading with `resource-base`
+
+By default, `mcp-ui` loads `ui://` scripts, styles, and media through its message bridge.
+
+If you provide `resource-base`, `mcp-ui` keeps native tags like `<script>`, `<link>`, and `<img>` in the iframe document and rewrites `ui://` URLs to browser-loadable URLs instead. If no custom `resolver` is set, `resource-base` is also used as the default resolver for the root `src` document.
+
+```html
+<mcp-view
+	src="ui://index.html"
+	resource-base="/mcp/resources?uri={uri}"></mcp-view>
+```
+
+This is the recommended mode when you want better compatibility with existing MCP Apps, especially for normal script loading and module imports.
+
+`resource-base` supports the same URL patterns as `base`:
+
+- `{path}` replaces the stripped `ui://` path
+- `{uri}` replaces the full encoded `ui://` URI
+- if the value contains `?`, `&uri=` is appended
+- otherwise the stripped path is appended to the base path
+
+If `resource-base` is not set, `mcp-ui` keeps the legacy bridge-based loader for backwards compatibility.
+
+## Deferring initial render
+
+If the host needs to set properties like `css`, `csp`, `resolver`, or `toolCaller` before the iframe loads, you can defer the initial render.
+
+```html
+<mcp-view
+	defer
+	src="ui://review/index.html"
+	resource-base="/mcp/resources?uri={uri}"></mcp-view>
+```
+
+Then, after you set properties, call `render()` once:
+
+```js
+const view = document.querySelector("mcp-view");
+view.css = { "--mcp-color-bg": "#111" };
+view.csp = "default-src 'none'; style-src 'unsafe-inline'";
+view.resolver = async(uri) => fetch(`/mcp/resources?uri=${encodeURIComponent(uri)}`);
+view.render();
+```
+
 ## Theming
 
 The component injects default CSS variables and utility classes first, then your overrides.
@@ -52,7 +97,7 @@ The component injects default CSS variables and utility classes first, then your
 <mcp-view theme="https://example.com/theme.css"></mcp-view>
 ```
 
-`theme` is loaded as a stylesheet link. For `ui://` URLs it uses the resolver via `<mcp-link>`. For http/https it is always allowed and does not require manual allowlisting. Relative URLs resolve against the host page.
+`theme` is loaded as a stylesheet link. For `ui://` URLs it uses the legacy resolver bridge by default, or `resource-base` when native resource loading is enabled. For http/https it is always allowed and does not require manual allowlisting. Relative URLs resolve against the host page.
 
 ### CSS override (property)
 
@@ -104,6 +149,26 @@ Set the `data` property on the host. The iframe can access `window.mcpData` and 
 view.data = { input: "hello", output: null };
 ```
 
+## Passing a completed tool result to the iframe
+
+If the host already has a completed MCP tool result and wants to render UI after the tool call, set the `toolResult` property on the host. The iframe receives it through the same guest-side result handlers used for live tool calls:
+
+- `window.mcp.ontoolresult`
+- `app.ontoolresult`
+
+```js
+view.toolResult = {
+  content: [{ type: "text", text: "Rendered in the app" }],
+  structuredContent: { items: [] },
+  _meta: { some: "value" },
+  isError: false,
+};
+```
+
+This is intended for practical MCP Apps compatibility for embedded apps: the app receives the same result envelope shape it would normally see after a tool call, without needing to replay the tool call from inside the iframe.
+
+This is not full wire-level MCP Apps protocol compliance yet. Internally, `mcp-ui` still uses its own bridge messages such as `mcp:tool-result` rather than emitting the exact MCP Apps JSON-RPC notification names.
+
 ## Autoheight
 
 Enable the iframe to report its content height so the host element resizes itself:
@@ -120,9 +185,77 @@ You can cap the height with `max-height` (pixels):
 
 Note: if your content sets `html, body { height: 100%; }` or `min-height: 100%`, the reported height may stay at least the viewport height.
 
+## MCP Apps compatibility
+
+The iframe bridge now exposes an MCP Apps-style guest API.
+
+Important distinction:
+
+- `mcp-ui` aims for practical MCP Apps compatibility at the app boundary: embedded apps can use MCP Apps-style APIs and receive MCP-style result envelopes including `structuredContent`.
+- `mcp-ui` does not yet claim full wire-level MCP Apps protocol compliance. The internal host/iframe bridge still uses `postMessage` message types such as `mcp:tool-result`, `mcp:tool-input`, and `mcp:connect`.
+
+The current goal is that existing MCP Apps-compatible client code inside the iframe can run correctly. Exact protocol and notification naming can be aligned later if needed.
+
+The iframe bridge now exposes an MCP Apps-style guest API:
+
+```js
+const app = new App({ name: "My App", version: "1.0.0" });
+await app.connect();
+```
+
+Supported guest-side APIs:
+
+- `app.connect()`
+- `app.callServerTool(...)`
+- `app.sendMessage(...)`
+- `app.ontoolinput`
+- `app.ontoolresult`
+- `app.onhostcontextchanged`
+- `app.getHostContext()`
+
+Helper functions are also available in the iframe and from the package export:
+
+- `applyHostStyleVariables(...)`
+- `applyHostFonts(...)`
+- `applyDocumentTheme(...)`
+
+The older `window.mcp.*` API still exists as a compatibility layer, but new clients should prefer the `App` API.
+
+## Host styles and CSS variables
+
+`mcp-ui` now supports MCP Apps-style host theming via host context:
+
+- `hostContext.theme`
+- `hostContext.styles.variables`
+- `hostContext.styles.css.fonts`
+
+Inside the iframe, apps can apply them like this:
+
+```js
+const app = new App({ name: "My App", version: "1.0.0" });
+app.onhostcontextchanged = (ctx) => {
+	if (ctx.theme) {
+		applyDocumentTheme(ctx.theme);
+	}
+	if (ctx.styles?.variables) {
+		applyHostStyleVariables(ctx.styles.variables);
+	}
+	if (ctx.styles?.css?.fonts) {
+		applyHostFonts(ctx.styles.css.fonts);
+	}
+};
+await app.connect();
+const ctx = app.getHostContext();
+if (ctx?.styles?.variables) {
+	applyHostStyleVariables(ctx.styles.variables);
+}
+```
+
+For backwards compatibility, `mcp-ui` also maps the MCP Apps tokens onto the older `--mcp-*` variables used by existing apps. That means older apps can continue using `--mcp-color-*`, `--mcp-font-*`, `--mcp-radius-*`, and `--mcp-shadow-*` while newer apps can use MCP Apps variables such as `--color-background-primary`, `--font-sans`, and `--border-radius-md` directly.
+
 ## Tool calling
 
-Inside the iframe, the bootstrap injects `window.mcp.callTool(params)`. It returns a Promise and rejects on errors.
+Inside the iframe, the bootstrap injects both the legacy `window.mcp.callTool(params)` helper and an MCP Apps-compatible `App` bridge. Tool responses preserve the MCP result envelope so `structuredContent` is available directly in the iframe.
 
 Host side:
 
@@ -140,7 +273,23 @@ const result = await window.mcp.callTool({
   name: "read_file",
   arguments: { path: "src/main.ts" },
 });
+
+// If the host tool returns an MCP Apps-style envelope, the iframe receives it.
+console.log(result.structuredContent);
 ```
+
+If the host-side `toolCaller` returns a plain value, legacy `callTool()` usage still resolves that value directly. If it returns an object shaped like an MCP tool result, such as:
+
+```js
+{
+  content: [{ type: "text", text: "Rendered in the app" }],
+  structuredContent: { items: [] },
+  _meta: { some: "value" },
+  isError: false,
+}
+```
+
+then that envelope is forwarded to the iframe unchanged.
 
 ## Layer order
 

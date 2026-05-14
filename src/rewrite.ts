@@ -5,6 +5,8 @@ type RewriteOptions = {
 	themeLink?: string | null;
 	bootstrapScript: string;
 	allowRemote: (url: string) => boolean;
+	resourceBase?: string | null;
+	csp?: string | null;
 };
 const BLOCKED_ATTR = "data-mcp-blocked";
 export function rewriteHtml(options: RewriteOptions): string {
@@ -12,13 +14,30 @@ export function rewriteHtml(options: RewriteOptions): string {
 	const doc = parser.parseFromString(options.html, "text/html");
 	addRootClass(doc.documentElement, "mcp-root");
 	if (doc.body) addRootClass(doc.body, "mcp-root");
-	rewriteElement(doc, "link", "href", "mcp-link", options);
-	rewriteElement(doc, "script", "src", "mcp-script", options);
-	rewriteElement(doc, "img", "src", "mcp-img", options);
-	rewriteElement(doc, "source", "src", "mcp-source", options);
-	rewriteElement(doc, "audio", "src", "mcp-audio", options);
-	rewriteElement(doc, "video", "src", "mcp-video", options);
+	if (options.resourceBase) {
+		rewriteElementUrls(doc, "link", "href", options);
+		rewriteElementUrls(doc, "script", "src", options);
+		rewriteElementUrls(doc, "img", "src", options);
+		rewriteElementUrls(doc, "source", "src", options);
+		rewriteElementUrls(doc, "audio", "src", options);
+		rewriteElementUrls(doc, "video", "src", options);
+	}
+	else {
+		rewriteElement(doc, "link", "href", "mcp-link", options);
+		rewriteElement(doc, "script", "src", "mcp-script", options);
+		rewriteElement(doc, "img", "src", "mcp-img", options);
+		rewriteElement(doc, "source", "src", "mcp-source", options);
+		rewriteElement(doc, "audio", "src", "mcp-audio", options);
+		rewriteElement(doc, "video", "src", "mcp-video", options);
+	}
 	const head = ensureHead(doc);
+	removeCspMeta(head);
+	if (options.csp) {
+		const meta = doc.createElement("meta");
+		meta.setAttribute("http-equiv", "Content-Security-Policy");
+		meta.setAttribute("content", options.csp);
+		head.insertBefore(meta, head.firstChild);
+	}
 	const themeStyle = doc.createElement("style");
 	themeStyle.setAttribute("data-mcp", "theme");
 	themeStyle.textContent = options.themeCss;
@@ -60,6 +79,25 @@ function rewriteElement(doc: Document, tagName: string, attrName: string, replac
 			}
 		}
 		el.replaceWith(replacement);
+	}
+}
+function rewriteElementUrls(doc: Document, tagName: string, attrName: string, options: RewriteOptions): void {
+	const elements = Array.from(doc.getElementsByTagName(tagName));
+	for (const el of elements) {
+		const raw = el.getAttribute(attrName);
+		if (!raw) continue;
+		const info = resolveUrl(raw, options.rootUri || undefined);
+		if (!info) continue;
+		if (info.scheme === "ui") {
+			el.setAttribute(attrName, buildResourceUrl(options.resourceBase || "", info.url));
+			continue;
+		}
+		if ((info.scheme === "http" || info.scheme === "https") && !options.allowRemote(info.url)) {
+			el.setAttribute(BLOCKED_ATTR, "true");
+			if (tagName === "script") {
+				el.removeAttribute(attrName);
+			}
+		}
 	}
 }
 function resolveUrl(raw: string, base?: string): { url: string; scheme: string } | null {
@@ -114,11 +152,48 @@ function ensureHead(doc: Document): HTMLHeadElement {
 	}
 	return head;
 }
+function removeCspMeta(head: HTMLHeadElement): void {
+	const metas = Array.from(head.querySelectorAll("meta[http-equiv]"));
+	for (const meta of metas) {
+		const value = meta.getAttribute("http-equiv");
+		if (!value) continue;
+		if (value.toLowerCase() === "content-security-policy") {
+			meta.remove();
+		}
+	}
+}
+function buildResourceUrl(base: string, uri: string): string {
+	if (!base) {
+		return uri;
+	}
+	const stripped = uri.startsWith("ui://") ? uri.slice("ui://".length) : uri;
+	if (/\{uri\}/i.test(base)) {
+		return base.replace(/\{uri\}/gi, encodeURIComponent(uri));
+	}
+	if (/\{path\}/i.test(base)) {
+		return base.replace(/\{path\}/gi, encodeURI(stripped));
+	}
+	if (base.includes("?")) {
+		const joiner = base.endsWith("?") || base.endsWith("&") ? "" : "&";
+		return `${base}${joiner}uri=${encodeURIComponent(uri)}`;
+	}
+	if (base.endsWith("/")) {
+		return `${base}${encodeURI(stripped)}`;
+	}
+	return `${base}/${encodeURI(stripped)}`;
+}
 function buildThemeLink(doc: Document, url: string, options: RewriteOptions): HTMLElement | null {
 	const trimmed = url.trim();
 	const info = trimmed.startsWith("ui://") ? resolveUrl(trimmed, options.rootUri || undefined) : resolveUrlWithWindow(trimmed);
 	if (!info) return null;
 	if (info.scheme === "ui") {
+		if (options.resourceBase) {
+			const node = doc.createElement("link");
+			node.setAttribute("rel", "stylesheet");
+			node.setAttribute("href", buildResourceUrl(options.resourceBase, info.url));
+			node.setAttribute("layer", "mcp-user");
+			return node;
+		}
 		const node = doc.createElement("mcp-link");
 		node.setAttribute("rel", "stylesheet");
 		node.setAttribute("href", info.url);

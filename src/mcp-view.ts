@@ -1,7 +1,7 @@
 import { normalizeResolverResult, inferMime, type ResourceKind } from "./bridge";
 import { getIframeBootstrapScript } from "./iframe-bootstrap";
 import { rewriteHtml } from "./rewrite";
-import { buildThemeCss, type CssInput } from "./theme";
+import { buildThemeCss, mcpAppsDefaultVariables, type CssInput } from "./theme";
 export type ResolverResult = Response | Blob | string | ArrayBuffer | Uint8Array;
 export type Resolver = (uri: string) => Promise<ResolverResult>;
 export type ToolCaller = (params: unknown) => Promise<unknown>;
@@ -25,11 +25,15 @@ type ResolveResult = {
 type ToolResult = {
 	ok: boolean;
 	result?: unknown;
+	structuredContent?: unknown;
+	content?: unknown;
+	_meta?: unknown;
+	isError?: boolean;
 	error?: string;
 };
 export class McpViewElement extends HTMLElement {
 	static get observedAttributes(): string[] {
-		return ["src", "theme", "base", "auto-height", "max-height"];
+		return ["src", "theme", "base", "resource-base", "auto-height", "max-height", "defer"];
 	}
 	private _resolver: Resolver | null = null
 	;
@@ -43,11 +47,27 @@ export class McpViewElement extends HTMLElement {
 	;
 	private _data: unknown = null
 	;
+	private _toolResult: unknown = null
+	;
+	private _connected = false
+	;
+	private _hostContext: Record<string, unknown> = {
+		theme: "light",
+		styles: {
+			variables: { ...mcpAppsDefaultVariables },
+			css: {}
+		}
+	}
+	;
+	private _csp: string | null = null
+	;
 	private _layers: string[] | null = null
 	;
 	private _iframe: HTMLIFrameElement | null = null
 	;
 	private _loadToken = 0
+	;
+	private _renderScheduled = false
 	;
 	private _boundMessageHandler = (event: MessageEvent) => this.handleMessage(event)
 	;
@@ -63,24 +83,28 @@ export class McpViewElement extends HTMLElement {
 		iframe.style.width = "100%";
 		iframe.style.height = "100%";
 		iframe.style.border = "0";
-		iframe.addEventListener("load", () => this.sendDataUpdate());
+		iframe.addEventListener("load", () => {
+			this._connected = false;
+			this.sendDataUpdate();
+		});
 		root.appendChild(iframe);
 		this._iframe = iframe;
 	}
 	connectedCallback(): void {
 		window.addEventListener("message", this._boundMessageHandler);
-		this.render();
+		console.info("[mcp] view connected", { src: this.getAttribute("src"), resourceBase: this.resourceBase || null });
+		this.scheduleRender();
 	}
 	disconnectedCallback(): void {
 		window.removeEventListener("message", this._boundMessageHandler);
 	}
 	attributeChangedCallback(name: string): void {
-		if (name === "src" || name === "theme" || name === "base") {
-			this.render();
+		if (name === "src" || name === "theme" || name === "base" || name === "resource-base") {
+			this.scheduleRender();
 			return;
 		}
 		if (name === "auto-height") {
-			this.render();
+			this.scheduleRender();
 		}
 	}
 	get resolver(): Resolver | null {
@@ -88,7 +112,7 @@ export class McpViewElement extends HTMLElement {
 	}
 	set resolver(value: Resolver | null) {
 		this._resolver = value;
-		this.render();
+		this.scheduleRender();
 	}
 	get themeUrl(): string {
 		return this.getAttribute("theme") || "";
@@ -108,6 +132,17 @@ export class McpViewElement extends HTMLElement {
 		}
 		else {
 			this.removeAttribute("base");
+		}
+	}
+	get resourceBase(): string {
+		return this.getAttribute("resource-base") || "";
+	}
+	set resourceBase(value: string) {
+		if (value) {
+			this.setAttribute("resource-base", value);
+		}
+		else {
+			this.removeAttribute("resource-base");
 		}
 	}
 	get src(): string {
@@ -138,14 +173,14 @@ export class McpViewElement extends HTMLElement {
 	}
 	set layers(value: string[] | null) {
 		this._layers = Array.isArray(value) ? value : null;
-		this.render();
+		this.scheduleRender();
 	}
 	get css(): CssInput | null {
 		return this._css;
 	}
 	set css(value: CssInput | null) {
 		this._css = value;
-		this.render();
+		this.scheduleRender();
 	}
 	get data(): unknown {
 		return this._data;
@@ -153,6 +188,54 @@ export class McpViewElement extends HTMLElement {
 	set data(value: unknown) {
 		this._data = value;
 		this.sendDataUpdate();
+	}
+	get hostTheme(): string | null {
+		return typeof (this._hostContext as Record<string, unknown> | null)?.theme === "string"
+			? String((this._hostContext as Record<string, unknown>).theme)
+			: null;
+	}
+	set hostTheme(value: string | null) {
+		const next = value === "light" || value === "dark" ? value : null;
+		this.updateHostContext({ theme: next });
+	}
+	get hostStyleVariables(): Record<string, string> | null {
+		const styles = (this._hostContext as { styles?: { variables?: Record<string, string> | null } | null } | null)?.styles;
+		return styles?.variables || null;
+	}
+	set hostStyleVariables(value: Record<string, string> | null) {
+		this.updateHostContext({ styles: { variables: value || null } });
+	}
+	get hostFonts(): string | null {
+		const styles = (this._hostContext as { styles?: { css?: { fonts?: string | null } | null } | null } | null)?.styles;
+		return styles?.css?.fonts || null;
+	}
+	set hostFonts(value: string | null) {
+		this.updateHostContext({ styles: { css: { fonts: value || null } } });
+	}
+	get csp(): string | null {
+		return this._csp;
+	}
+	set csp(value: string | null) {
+		this._csp = value;
+		this.scheduleRender();
+	}
+	get deferRender(): boolean {
+		return this.readBooleanAttribute("defer");
+	}
+	set deferRender(value: boolean) {
+		if (value) {
+			this.setAttribute("defer", "true");
+		}
+		else {
+			this.removeAttribute("defer");
+		}
+	}
+	get toolResult(): unknown {
+		return this._toolResult;
+	}
+	set toolResult(value: unknown) {
+		this._toolResult = value;
+		this.sendToolResult();
 	}
 	get autoHeight(): boolean {
 		return this.readBooleanAttribute("auto-height");
@@ -172,16 +255,30 @@ export class McpViewElement extends HTMLElement {
 		if (!Number.isFinite(parsed) || parsed <= 0) return null;
 		return parsed;
 	}
-	private render(): void {
+	private scheduleRender(): void {
+		if (!this.isConnected) return;
+		if (this.deferRender) return;
+		if (this._renderScheduled) return;
+		this._renderScheduled = true;
+		window.requestAnimationFrame(
+			() => {
+				this._renderScheduled = false;
+				this.render();
+			}
+		);
+	}
+	public render(): void {
 		if (!this.isConnected) return;
 		const uri = this.getRootUri();
 		if (!uri) return;
+		console.info("[mcp] render", { uri });
 		void this.load(uri);
 	}
 	private async load(uri: string): Promise<void> {
 		const token = ++this._loadToken;
 		const root = await this.resolveResource(uri, "document");
 		if (!root.ok) return;
+		console.info("[mcp] load", { uri, mime: root.mime, size: root.body?.length ?? 0 });
 		const html = new TextDecoder().decode(root.body);
 		const themeCss = buildThemeCss({ css: this._css, layers: this._layers });
 		const bootstrapScript = getIframeBootstrapScript(this._data, { autoHeight: this.autoHeight });
@@ -192,7 +289,9 @@ export class McpViewElement extends HTMLElement {
 				themeCss,
 				themeLink: this.themeUrl || null,
 				bootstrapScript,
-				allowRemote: (url) => this.isRemoteAllowed(url)
+				allowRemote: (url) => this.isRemoteAllowed(url),
+				resourceBase: this.resourceBase || null,
+				csp: this._csp
 			}
 		);
 		if (token !== this._loadToken) return;
@@ -254,6 +353,47 @@ export class McpViewElement extends HTMLElement {
 			const maxHeight = this.maxHeight;
 			const nextHeight = maxHeight ? Math.min(height, maxHeight) : height;
 			this.style.height = `${Math.ceil(nextHeight)}px`;
+			return;
+		}
+		if (data.type === "mcp:connect") {
+			const id = typeof data.id === "number" ? data.id : 0;
+			if (!id) {
+				console.error("[mcp] invalid connect", { id });
+				return;
+			}
+			this._connected = true;
+			console.info("[mcp] connect", { id });
+			this.postMessageToSource(
+				event.source,
+				{
+					type: "mcp:connect-result",
+					id,
+					ok: true,
+					hostCapabilities: {
+						callServerTool: true,
+						sendMessage: true,
+						toolInput: true,
+						toolResult: true,
+						data: true,
+						hostContext: true,
+						styles: true
+					},
+					hostContext: this._hostContext
+				},
+				[]
+			);
+			this.sendToolInput();
+			this.sendToolResult();
+			return;
+		}
+		if (data.type === "mcp:send-message") {
+			const id = typeof data.id === "number" ? data.id : 0;
+			if (!id) {
+				console.error("[mcp] invalid send message", { id });
+				return;
+			}
+			this.postMessageToSource(event.source, { type: "mcp:send-message-result", id, ok: true }, []);
+			return;
 		}
 	}
 	private async fulfillRequest(request: PendingRequest): Promise<void> {
@@ -293,7 +433,12 @@ export class McpViewElement extends HTMLElement {
 		else {
 			try {
 				const result = await caller(request.params);
-				response = { ok: true, result };
+				if (result && typeof result === "object" && !Array.isArray(result)) {
+					response = { ok: true, ...(result as Record<string, unknown>) };
+				}
+				else {
+					response = { ok: true, result };
+				}
 			}
 			catch (error) {
 				response = { ok: false, error: error instanceof Error ? error.message : "Tool call failed" };
@@ -302,11 +447,18 @@ export class McpViewElement extends HTMLElement {
 		if (!response.ok) {
 			console.error("[mcp] tool call failed", { error: response.error || "Unknown error" });
 		}
+		const envelope = {
+			result: response.result,
+			structuredContent: response.structuredContent,
+			content: response.content,
+			_meta: response._meta,
+			isError: response.isError
+		};
 		const message = {
 			type: "mcp:tool-result",
 			id: request.id,
 			ok: response.ok,
-			result: response.result,
+			...envelope,
 			error: response.error
 		};
 		this.postMessageToSource(request.source, message, []);
@@ -401,7 +553,84 @@ export class McpViewElement extends HTMLElement {
 	}
 	private sendDataUpdate(): void {
 		if (!this._iframe || !this._iframe.contentWindow) return;
+		console.info("[mcp] data update", { connected: this._connected });
 		this._iframe.contentWindow.postMessage({ type: "mcp-data:update", payload: this._data }, "*");
+		this.sendHostContext();
+		this.sendToolInput();
+		this.sendToolResult();
+	}
+	private sendHostContext(): void {
+		if (!this._connected || !this._iframe || !this._iframe.contentWindow) return;
+		console.info("[mcp] host context", { hasContext: Boolean(this._hostContext) });
+		this._iframe.contentWindow.postMessage({ type: "mcp:host-context-changed", context: this._hostContext }, "*");
+	}
+	private updateHostContext(update: {
+		theme?: string | null;
+		styles?: {
+			variables?: Record<string, string> | null;
+			css?: { fonts?: string | null } | null;
+		} | null;
+	}): void {
+		const next: Record<string, unknown> = { ...(this._hostContext || {}) };
+		if (Object.prototype.hasOwnProperty.call(update, "theme")) {
+			if (update.theme) {
+				next.theme = update.theme;
+			}
+			else {
+				delete next.theme;
+			}
+		}
+		if (Object.prototype.hasOwnProperty.call(update, "styles")) {
+			const currentStyles = (next.styles as Record<string, unknown> | null) || {};
+			const nextStyles: Record<string, unknown> = { ...currentStyles };
+			const styles = update.styles;
+			if (styles && Object.prototype.hasOwnProperty.call(styles, "variables")) {
+				const mergedVariables = { ...mcpAppsDefaultVariables, ...(styles.variables || {}) };
+				nextStyles.variables = mergedVariables;
+			}
+			if (styles && Object.prototype.hasOwnProperty.call(styles, "css")) {
+				const currentCss = (nextStyles.css as Record<string, unknown> | null) || {};
+				const nextCss: Record<string, unknown> = { ...currentCss };
+				if (styles.css && Object.prototype.hasOwnProperty.call(styles.css, "fonts")) {
+					if (styles.css.fonts) {
+						nextCss.fonts = styles.css.fonts;
+					}
+					else {
+						delete nextCss.fonts;
+					}
+				}
+				if (Object.keys(nextCss).length > 0) {
+					nextStyles.css = nextCss;
+				}
+				else {
+					delete nextStyles.css;
+				}
+			}
+			if (Object.keys(nextStyles).length > 0) {
+				next.styles = nextStyles;
+			}
+			else {
+				delete next.styles;
+			}
+		}
+		this._hostContext = next;
+		this.sendHostContext();
+	}
+	private sendToolInput(): void {
+		if (!this._connected || !this._iframe || !this._iframe.contentWindow) return;
+		console.info("[mcp] tool input", { hasInput: this._data != null });
+		this._iframe.contentWindow.postMessage({ type: "mcp:tool-input", input: this._data }, "*");
+	}
+	private sendToolResult(): void {
+		if (!this._connected || !this._iframe || !this._iframe.contentWindow) return;
+		const result = this._toolResult;
+		if (result === undefined || result === null) return;
+		console.info("[mcp] send tool result", { resultType: typeof result });
+		if (result && typeof result === "object" && !Array.isArray(result)) {
+			this._iframe.contentWindow.postMessage({ type: "mcp:tool-result", id: 0, ok: true, ...(result as Record<string, unknown>) }, "*");
+			return;
+		}
+		this._iframe.contentWindow.postMessage({ type: "mcp:tool-result", id: 0, ok: true, result }, "*");
 	}
 	private readBooleanAttribute(name: string): boolean {
 		const raw = this.getAttribute(name);
@@ -413,13 +642,12 @@ export class McpViewElement extends HTMLElement {
 	}
 	private getActiveResolver(): Resolver | null {
 		if (this._resolver) return this._resolver;
-		const base = this.base || DEFAULT_BASE;
+		const base = this.resourceBase || this.base || DEFAULT_BASE;
 		return this.buildDefaultResolver(base);
 	}
 	private buildDefaultResolver(base: string): Resolver {
-		const resolvedBase = resolveBaseUrl(base);
 		return async(uri) => {
-			const url = buildResolverUrl(resolvedBase, uri);
+			const url = resolveBaseUrl(buildResolverUrl(base, uri));
 			return fetch(url);
 		};
 	}

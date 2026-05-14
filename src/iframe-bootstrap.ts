@@ -10,8 +10,12 @@ export function getIframeBootstrapScript(initialData: unknown, options: Bootstra
   window.mcpData = initialData;
   const pending = new Map();
   const toolPending = new Map();
+  const rpcPending = new Map();
   let nextId = 1;
   let nextToolId = 1;
+  let nextRpcId = 1;
+  let connected = false;
+  let hostContext = null;
   const decoder = new TextDecoder();
   const deferredScripts = [];
   let deferredReady = document.readyState !== "loading";
@@ -65,8 +69,97 @@ export function getIframeBootstrapScript(initialData: unknown, options: Bootstra
     return new Promise((resolve, reject) => {
       const id = nextToolId++;
       toolPending.set(id, { resolve, reject });
-      window.parent.postMessage({ type: "mcp:tool-call", id, params }, "*");
+      window.parent.postMessage({ type: "mcp:tool-call", id, params, method: "tools/call" }, "*");
     });
+  }
+
+  function connectApp() {
+    if (connected) {
+      return Promise.resolve({});
+    }
+    return new Promise((resolve, reject) => {
+      const id = nextRpcId++;
+      console.info("[mcp] connect request", { id });
+      rpcPending.set(id, { type: "connect", resolve, reject });
+      window.parent.postMessage({ type: "mcp:connect", id }, "*");
+    });
+  }
+
+  function sendMessage(params) {
+    return new Promise((resolve, reject) => {
+      const id = nextRpcId++;
+      rpcPending.set(id, { type: "send-message", resolve, reject });
+      window.parent.postMessage({ type: "mcp:send-message", id, params }, "*");
+    });
+  }
+
+  function applyDocumentTheme(theme, root = document.documentElement) {
+    if (!root) return;
+    if (theme !== "light" && theme !== "dark") return;
+    root.setAttribute("data-theme", theme);
+    root.style.colorScheme = theme;
+  }
+
+  function applyHostStyleVariables(vars, root = document.documentElement) {
+    if (!vars || !root || !root.style) return;
+    for (const [key, value] of Object.entries(vars)) {
+      if (!key.startsWith("--") || typeof value !== "string") continue;
+      root.style.setProperty(key, value);
+    }
+  }
+
+  function applyHostFonts(fontCss, doc = document) {
+    if (!fontCss || !doc) return;
+    const styleId = "mcp-host-fonts";
+    let style = doc.getElementById(styleId);
+    if (!style) {
+      style = doc.createElement("style");
+      style.id = styleId;
+      (doc.head || doc.documentElement).appendChild(style);
+    }
+    if (style.textContent !== fontCss) {
+      style.textContent = fontCss;
+    }
+  }
+
+  function applyHostContext(ctx) {
+    if (!ctx || typeof ctx !== "object") return;
+    hostContext = { ...(hostContext || {}), ...ctx };
+    if (hostContext.theme) {
+      applyDocumentTheme(hostContext.theme);
+    }
+    if (hostContext.styles?.variables) {
+      applyHostStyleVariables(hostContext.styles.variables);
+    }
+    if (hostContext.styles?.css?.fonts) {
+      applyHostFonts(hostContext.styles.css.fonts);
+    }
+    if (window.mcp && typeof window.mcp.onhostcontextchanged === "function") {
+      window.mcp.onhostcontextchanged(hostContext);
+    }
+    if (window.App && typeof window.App.__deliverHostContextChanged === "function") {
+      window.App.__deliverHostContextChanged(hostContext);
+    }
+  }
+
+  function deliverToolInput(input) {
+    window.mcpData = input;
+    window.dispatchEvent(new CustomEvent("mcp-data", { detail: input }));
+    if (window.mcp && typeof window.mcp.ontoolinput === "function") {
+      window.mcp.ontoolinput({ arguments: input });
+    }
+    if (window.App && typeof window.App.__deliverToolInput === "function") {
+      window.App.__deliverToolInput(input);
+    }
+  }
+
+  function deliverToolResult(result) {
+    if (window.mcp && typeof window.mcp.ontoolresult === "function") {
+      window.mcp.ontoolresult(result);
+    }
+    if (window.App && typeof window.App.__deliverToolResult === "function") {
+      window.App.__deliverToolResult(result);
+    }
   }
 
   window.addEventListener("message", (event) => {
@@ -81,20 +174,73 @@ export function getIframeBootstrapScript(initialData: unknown, options: Bootstra
       return;
     }
     if (data.type === "mcp:tool-result") {
+      console.info("[mcp] tool result received", { ok: data.ok, hasId: Boolean(data.id) });
       const entry = toolPending.get(data.id);
-      if (!entry) return;
-      toolPending.delete(data.id);
+      const result = (
+        Object.prototype.hasOwnProperty.call(data, "structuredContent") ||
+        Object.prototype.hasOwnProperty.call(data, "content") ||
+        Object.prototype.hasOwnProperty.call(data, "_meta") ||
+        Object.prototype.hasOwnProperty.call(data, "isError")
+      )
+        ? {
+            structuredContent: data.structuredContent,
+            content: data.content,
+            _meta: data._meta,
+            isError: data.isError === true,
+          }
+        : data.result;
       if (data.ok) {
-        entry.resolve(data.result);
-      } else {
+        if (entry) {
+          toolPending.delete(data.id);
+          entry.resolve(result);
+        }
+        console.info("[mcp] deliver tool result", { hasEntry: Boolean(entry) });
+        deliverToolResult(result);
+      } else if (entry) {
+        toolPending.delete(data.id);
         const message = data.error || "Tool call failed";
         entry.reject(new Error(message));
       }
       return;
     }
+    if (data.type === "mcp:connect-result") {
+      const entry = rpcPending.get(data.id);
+      if (!entry) return;
+      rpcPending.delete(data.id);
+      if (!data.ok) {
+        entry.reject(new Error(data.error || "Connect failed"));
+        return;
+      }
+      connected = true;
+      console.info("[mcp] connected", { ok: data.ok, hostCapabilities: data.hostCapabilities || {} });
+      applyHostContext(data.hostContext || {});
+      entry.resolve({ hostCapabilities: data.hostCapabilities || {}, hostContext: hostContext || {} });
+      if (window.parent) {
+        window.parent.postMessage({ type: "mcp:initialized" }, "*");
+      }
+      return;
+    }
+    if (data.type === "mcp:send-message-result") {
+      const entry = rpcPending.get(data.id);
+      if (!entry) return;
+      rpcPending.delete(data.id);
+      if (!data.ok) {
+        entry.reject(new Error(data.error || "Send message failed"));
+        return;
+      }
+      entry.resolve({});
+      return;
+    }
+    if (data.type === "mcp:tool-input") {
+      deliverToolInput(data.input);
+      return;
+    }
+    if (data.type === "mcp:host-context-changed") {
+      applyHostContext(data.context || {});
+      return;
+    }
     if (data.type === "mcp-data:update") {
-      window.mcpData = data.payload;
-      window.dispatchEvent(new CustomEvent("mcp-data", { detail: data.payload }));
+      deliverToolInput(data.payload);
     }
   });
 
@@ -142,6 +288,71 @@ export function getIframeBootstrapScript(initialData: unknown, options: Bootstra
 
   window.mcp = window.mcp || {};
   window.mcp.callTool = callTool;
+  window.mcp.connect = connectApp;
+  window.mcp.callServerTool = callTool;
+  window.mcp.sendMessage = sendMessage;
+  window.mcp.applyDocumentTheme = applyDocumentTheme;
+  window.mcp.applyHostStyleVariables = applyHostStyleVariables;
+  window.mcp.applyHostFonts = applyHostFonts;
+  window.mcp.getHostContext = () => hostContext;
+  window.mcp.ontoolinput = null;
+  window.mcp.ontoolresult = null;
+  window.mcp.onhostcontextchanged = null;
+
+  class App {
+    constructor() {
+      this.ontoolinput = null;
+      this.ontoolresult = null;
+      this.onhostcontextchanged = null;
+      App.__instances.push(this);
+    }
+
+    async connect() {
+      return connectApp();
+    }
+
+    async callServerTool(params) {
+      return callTool(params);
+    }
+
+    async sendMessage(params) {
+      return sendMessage(params);
+    }
+
+    getHostContext() {
+      return hostContext;
+    }
+
+    static __deliverToolInput(input) {
+      for (const app of App.__instances) {
+        if (typeof app.ontoolinput === "function") {
+          app.ontoolinput({ arguments: input });
+        }
+      }
+    }
+
+    static __deliverToolResult(result) {
+      for (const app of App.__instances) {
+        if (typeof app.ontoolresult === "function") {
+          app.ontoolresult(result);
+        }
+      }
+    }
+
+    static __deliverHostContextChanged(context) {
+      for (const app of App.__instances) {
+        if (typeof app.onhostcontextchanged === "function") {
+          app.onhostcontextchanged(context);
+        }
+      }
+    }
+  }
+
+  App.__instances = [];
+  window.App = App;
+  window.applyDocumentTheme = applyDocumentTheme;
+  window.applyHostStyleVariables = applyHostStyleVariables;
+  window.applyHostFonts = applyHostFonts;
 
   function toText(body) {
     const buffer = body || new ArrayBuffer(0);
