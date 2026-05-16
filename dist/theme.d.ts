@@ -10,6 +10,7 @@ export type McpHostStyles = {
 export type ThemeInputs = {
     css?: CssInput | null;
     layers?: string[] | null;
+    hostVariables?: McpHostStyleVariables | null;
 };
 export declare const mcpAppsDefaultVariables: Record<string, string>;
 export declare function buildThemeCss(inputs: ThemeInputs): string;

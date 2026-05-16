@@ -7,7 +7,11 @@ export type McpHostStyles = {
 		fonts?: string | null;
 	} | null;
 };
-export type ThemeInputs = { css?: CssInput | null; layers?: string[] | null };
+export type ThemeInputs = {
+	css?: CssInput | null;
+	layers?: string[] | null;
+	hostVariables?: McpHostStyleVariables | null;
+};
 const DEFAULT_LAYERS = ["mcp-default", "mcp-content", "mcp-user"];
 const defaultVariables: Record<string, string> = {
 	"--mcp-color-bg": "#f7f7f5",
@@ -209,9 +213,11 @@ export function buildThemeCss(inputs: ThemeInputs): string {
 	const order = buildLayerOrder(inputs.layers);
 	parts.push(`@layer ${order.join(", ")};`);
 	parts.push(wrapLayer("mcp-default", utilityCss));
+	const hostOverrides = normalizeCssInput(inputs.hostVariables);
 	const overrides = normalizeCssInput(inputs.css);
-	if (overrides) {
-		parts.push(wrapLayer("mcp-user", overrides));
+	const combined = [hostOverrides, overrides].filter(Boolean).join("\n");
+	if (combined) {
+		parts.push(wrapLayer("mcp-user", combined));
 	}
 	return parts.join("\n\n");
 }

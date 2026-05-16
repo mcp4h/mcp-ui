@@ -1057,9 +1057,11 @@ ${doc.documentElement.outerHTML}`;
     const order = buildLayerOrder(inputs.layers);
     parts.push(`@layer ${order.join(", ")};`);
     parts.push(wrapLayer("mcp-default", utilityCss));
+    const hostOverrides = normalizeCssInput(inputs.hostVariables);
     const overrides = normalizeCssInput(inputs.css);
-    if (overrides) {
-      parts.push(wrapLayer("mcp-user", overrides));
+    const combined = [hostOverrides, overrides].filter(Boolean).join("\n");
+    if (combined) {
+      parts.push(wrapLayer("mcp-user", combined));
     }
     return parts.join("\n\n");
   }
@@ -1387,7 +1389,8 @@ ${css}
         return;
       console.info("[mcp] load", { uri, mime: root.mime, size: root.body?.length ?? 0 });
       const html = new TextDecoder().decode(root.body);
-      const themeCss = buildThemeCss({ css: this._css, layers: this._layers });
+      const hostVariables = this._hostContext?.styles?.variables || null;
+      const themeCss = buildThemeCss({ css: this._css, layers: this._layers, hostVariables });
       const bootstrapScript = getIframeBootstrapScript(this._data, { autoHeight: this.autoHeight });
       const rewritten = rewriteHtml(
         {
@@ -1494,6 +1497,7 @@ ${css}
           },
           []
         );
+        this.sendHostContext();
         this.sendToolInput();
         this.sendToolResult();
         return;
@@ -1667,7 +1671,6 @@ ${css}
     sendHostContext() {
       if (!this._connected || !this._iframe || !this._iframe.contentWindow)
         return;
-      console.info("[mcp] host context", { hasContext: Boolean(this._hostContext) });
       this._iframe.contentWindow.postMessage({ type: "mcp:host-context-changed", context: this._hostContext }, "*");
     }
     updateHostContext(update) {
