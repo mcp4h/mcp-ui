@@ -1136,18 +1136,24 @@ ${css}
     if (typeof value === "string")
       return value;
     if (typeof value === "object") {
-      const filtered = filterVariables(value);
-      if (Object.keys(filtered).length === 0)
+      const variables = filterVariables(value);
+      if (Object.keys(variables).length === 0)
         return null;
-      return `.mcp-root{${serializeVariables(filtered)}}`;
+      return `.mcp-root{${serializeVariables(variables)}}`;
     }
     return null;
   }
   function filterVariables(vars) {
     const filtered = {};
+    const style = document.createElement("div").style;
     for (const [key, value] of Object.entries(vars)) {
-      if (key.startsWith("--mcp-") || key.startsWith("--color-") || key.startsWith("--font-") || key.startsWith("--border-") || key.startsWith("--shadow-")) {
-        filtered[key] = value;
+      if (!/^--[-_a-zA-Z\u0080-\uFFFF][-_a-zA-Z0-9\u0080-\uFFFF]*$/.test(key) || typeof value !== "string") {
+        continue;
+      }
+      style.cssText = "";
+      style.setProperty(key, value);
+      if (style.length === 1 && style.item(0) === key) {
+        filtered[key] = style.getPropertyValue(key);
       }
     }
     return filtered;

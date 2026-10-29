@@ -284,17 +284,23 @@ function normalizeCssInput(input?: CssInput | null): string | null {
 	if (!value) return null;
 	if (typeof value === "string") return value;
 	if (typeof value === "object") {
-		const filtered = filterVariables(value);
-		if (Object.keys(filtered).length === 0) return null;
-		return `.mcp-root{${serializeVariables(filtered)}}`;
+		const variables = filterVariables(value);
+		if (Object.keys(variables).length === 0) return null;
+		return `.mcp-root{${serializeVariables(variables)}}`;
 	}
 	return null;
 }
 function filterVariables(vars: Record<string, string>): Record<string, string> {
 	const filtered: Record<string, string> = {};
+	const style = document.createElement("div").style;
 	for (const [key, value] of Object.entries(vars)) {
-		if (key.startsWith("--mcp-") || key.startsWith("--color-") || key.startsWith("--font-") || key.startsWith("--border-") || key.startsWith("--shadow-")) {
-			filtered[key] = value;
+		if (!/^--[-_a-zA-Z\u0080-\uFFFF][-_a-zA-Z0-9\u0080-\uFFFF]*$/.test(key) || typeof value !== "string" || /[<>]/.test(value)) {
+			continue;
+		}
+		style.cssText = "";
+		style.setProperty(key, value);
+		if (style.length === 1 && style.item(0) === key) {
+			filtered[key] = style.getPropertyValue(key);
 		}
 	}
 	return filtered;
